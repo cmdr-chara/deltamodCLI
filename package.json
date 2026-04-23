@@ -1,0 +1,18 @@
+{
+  "name": "deltamodcli",
+  "version": "1.0.0",
+  "description": "Deltamod pair-in CLI",
+  "license": "ISC",
+  "author": "GhinoRhino - Deltamodders",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "node index.js",
+    "build": "npx esbuild index.js --bundle --platform=node --outfile=dist/bundle.js && node --build-sea sea_config.json"
+  },
+  "dependencies": {
+    "app-data-folder": "^1.0.0",
+    "chalk": "^4.1.2",
+    "esbuild": "^0.28.0"
+  }
+}
