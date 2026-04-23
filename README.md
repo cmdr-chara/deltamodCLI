@@ -10,3 +10,4 @@ import - Imports the Deltamod project to the Deltamod desktop app.
 inspect - Inspects the current Deltamod project and displays its name and version.
 xml - Run the XML editor
 ```
+The command is named `deltamod` in your command line.
