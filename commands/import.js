@@ -11,11 +11,11 @@ function run() {
         fs.mkdirSync(path.join(appDataPath, 'pkg.db'), { recursive: true });
     }
 
-    log('importing to deltamod pkg.db... (cwd: ' + process.cwd() + ')');
+    log('importing to deltamod pkg.db...');
 
     let t = new Date().getTime();
 
-    fs.cpSync(process.cwd(), path.join(appDataPath, 'pkg.db', 'Mod-' + t), { recursive: true });
+    fs.cpSync(process.cwd(), path.join(appDataPath, 'pkg.db', 'DCLIMod-' + t), { recursive: true });
 
     log('import complete, opening deltamod...'); 
 

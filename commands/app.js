@@ -15,6 +15,7 @@ function run(detached = false) {
 
     log('Deltamod main app launched');
 
+    return;
 }
 
 module.exports = run;

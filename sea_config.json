@@ -1,7 +1,7 @@
 {
   "main": "./dist/bundle.js",
   "mainFormat": "commonjs",
-  "output": "./deltamodCLI.exe",
+  "output": "./deltamod.exe",
   "disableExperimentalSEAWarning": true,
   "useSnapshot": false,
   "useCodeCache": true,
