@@ -1,65 +1,86 @@
+#!/usr/bin/env node
+
 const chalk = require('chalk');
-const fs = require('fs');
+const { log, style } = require('./lib/output');
 
-const app = require('./commands/app.js');
-const init = require('./commands/init.js');
-const importCmd = require('./commands/import.js');
-const inspect = require('./commands/inspect.js');
-
-const COMMANDS = {
-    "app": {
-        "desc": "Opens the Deltamod desktop app if installed.",
-        "obj": app       
+const COMMANDS = Object.freeze({
+    app: {
+        description: 'Open Deltamod Community or official Deltamod.',
+        run: require('./commands/app')
     },
-    "init": {
-        "desc": "Initializes a new Deltamod meta.json file in the current directory.",
-        "obj": init
+    init: {
+        description: 'Create a modern meta.toml manifest in a mod project.',
+        run: require('./commands/init')
     },
-    "import": {
-        "desc": "Imports the Deltamod project to the Deltamod desktop app.",
-        "obj": importCmd
+    validate: {
+        description: 'Validate the manifest, patch plan, paths, and package contents.',
+        run: require('./commands/validate')
     },
-    "inspect": {
-        "desc": "Inspects the current Deltamod project and displays its name and version.",
-        "obj": inspect
+    pack: {
+        description: 'Build a validated .modarchive without importing it.',
+        run: require('./commands/pack')
     },
-    "xml": {
-        "desc": "Run the XML editor",
-        "obj": require('./commands/xml.js')
+    import: {
+        description: 'Package the project and request a confirmed Community import.',
+        run: require('./commands/import')
+    },
+    inspect: {
+        description: 'Display the current project identity and validation state.',
+        run: require('./commands/inspect')
+    },
+    xml: {
+        description: 'Open the local modding.xml editor.',
+        run: require('./commands/xml')
     }
+});
+
+function printHelp() {
+    console.log(style('Deltamod Community CLI', '#6ec8ff'));
+    console.log('Usage: deltamod-community <command> [options]\n');
+    console.log(style('Commands:', '#a9ddff'));
+    for (const [name, command] of Object.entries(COMMANDS)) {
+        console.log(`  ${chalk.bold(name.padEnd(10))} ${command.description}`);
+    }
+    console.log('\nRun a command with --help for its options.');
 }
 
-function style(text, hex) {
-    return chalk.hex(hex)(text);
+async function main(argv = process.argv.slice(2)) {
+    const [commandName, ...args] = argv;
+    if (!commandName || commandName === 'help' || commandName === '--help' || commandName === '-h') {
+        printHelp();
+        return 0;
+    }
+
+    const command = COMMANDS[commandName];
+    if (!command) {
+        log(`Unknown command "${commandName}".`);
+        printHelp();
+        return 1;
+    }
+
+    await command.run(args);
+    return 0;
 }
 
 process.on('SIGINT', () => {
-    console.log('\n' + style('Run cancelled.', '#ff6464'));
-    process.exit(0);
+    console.log(`\n${style('Operation cancelled.', '#ff7d7d')}`);
+    process.exitCode = 130;
 });
 
-function log(...args) {
-    console.log(style('deltamodCLI:','#639fff'), ...args);
+if (require.main === module) {
+    main()
+        .then(code => {
+            process.exitCode = code;
+        })
+        .catch(error => {
+            console.error(style(`Error: ${error.message}`, '#ff7d7d'));
+            if (process.env.DELTAMOD_CLI_DEBUG === '1') console.error(error.stack);
+            process.exitCode = 1;
+        });
 }
 
-var arguments = process.argv.slice(2);
-var command = arguments[0];
-
 module.exports = {
-    log,
-    style
+    COMMANDS,
+    main,
+    printHelp
 };
-
-(async () => {
-    if (command in COMMANDS) {
-        await COMMANDS[command].obj(arguments.slice(1));
-        process.exit(0);
-    } else {
-        log('command not found.');
-        console.log(style('Available commands:', '#9ac1ff'));
-        Object.keys(COMMANDS).forEach((cmd) => {
-            console.log(`  ${chalk.bold(cmd)} - ${COMMANDS[cmd].desc}`);
-        });
-        process.exit(1);
-    }
-})();

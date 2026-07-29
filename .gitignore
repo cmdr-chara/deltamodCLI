@@ -1,2 +1,6 @@
 /node_modules
-deltamod.exe
+/dist
+/deltamod.exe
+/deltamod-community-cli.exe
+/.deltamod-build
+*.tmp

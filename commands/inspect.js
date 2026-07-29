@@ -1,27 +1,29 @@
-const fs = require('fs');
 const path = require('path');
-const chalk = require('chalk');
+const { parseArgs, rejectUnknownOptions } = require('../lib/args');
+const { log, warn } = require('../lib/output');
+const { validateProject } = require('../lib/project');
 
-function style(text, hex) {
-    return chalk.hex(hex)(text);
-}
-
-function log(...args) {
-    console.log(style('deltamodCLI:','#639fff'), ...args);
-}
-
-
-function run() {
-    let meta;
-    try {
-        meta = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'meta.json'), 'utf-8')).metadata;
-    }
-    catch (e) {
-        log('No project found in current directory');
+async function run(args = []) {
+    if (args.includes('--help')) {
+        console.log('Usage: deltamod-community inspect [project]');
         return;
     }
-    
-    log('You are currently editing project "' + meta.name + '", version ' + meta.version);
+    const parsed = parseArgs(args);
+    rejectUnknownOptions(parsed);
+    if (parsed.positionals.length > 1) throw new Error('The inspect command accepts at most one project path.');
+
+    const project = validateProject(path.resolve(parsed.positionals[0] || process.cwd()));
+    log(`${project.metadata.name} ${project.metadata.version}`);
+    console.log(`Package ID: ${project.metadata.packageID}`);
+    console.log(`Game:       ${project.metadata.game}`);
+    console.log(`Manifest:   ${project.manifest.format}`);
+    console.log(`Patches:    ${project.patches.length}`);
+    console.log(`Files:      ${project.files.length}`);
+    console.log(`Size:       ${project.totalBytes} bytes`);
+    if (project.manifest.format === 'json') {
+        warn('Legacy meta.json is supported, but meta.toml is recommended.');
+    }
+    return project;
 }
 
 module.exports = run;

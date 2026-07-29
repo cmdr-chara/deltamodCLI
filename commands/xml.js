@@ -1,354 +1,199 @@
-const express = require("express");
-const chalk = require('chalk');
-function style(text, hex) {
-    return chalk.hex(hex)(text);
+const crypto = require('crypto');
+const fs = require('fs');
+const http = require('http');
+const path = require('path');
+const { isSafeRelativePath, resolveProjectPath } = require('../lib/project');
+const { openExternal } = require('../lib/launcher');
+const { log } = require('../lib/output');
+
+const MAXIMUM_BODY_BYTES = 1024 * 1024;
+const MAXIMUM_PATCHES = 1000;
+const PATCH_TYPES = new Set(['override', 'copy', 'xdelta', 'g3mpatch']);
+
+function escapeXmlAttribute(value) {
+    return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
 }
-function log(...args) {
-    console.log(style('deltamodCLI:','#639fff'), ...args);
-}
 
-async function run() {
-    return new Promise(async resolve => {
-        let rand = Math.random().toString(36).substring(2, 15);
-
-        const app = express();
-        const PORT = 3000;
-
-        const html = `
-        <!-- Generated at compile-time by MiscTools Builder on 2026-04-11T19:11:58.913Z -->
-        <!-- Modified for DeltamodCLI -->
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Create Deltamod XML file</title>
-        </head>
-        <body>
-            <div class="header">
-                <h1 id="h1title">Create Deltamod XML file</h1>
-                <p style="margin-bottom: 0;" id="h1desc">Create a modding.xml file for use in Deltamod</p>
-            </div>
-            <div class="main" style="height: calc(100% - 80px); overflow-y: scroll;">
-                <b>Generate a <code>modding.xml</code> file</b>
-        <br><br>
-        <i>Before proceeding with making a modding.xml, we ask you to read the Deltamod Modding Standard</i>
-        <br>
-        <hr>
-        <table>
-            <colgroup>
-                <col style="width: 15%;">
-                <col style="width: 40%;">
-                <col style="width: 40%;">
-                <col style="width: 5%;">
-            </colgroup>
-            <thead>
-                <tr>
-                    <th>Patch type (XDelta, Override..)</th>
-                    <th>Patch file (ex. <code>./myModpackPatch.xdelta</code>)</th>
-                    <th>Patch destination (ex. <code>./chapter1_windows/data.win</code>)</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody id="patchBody">
-                <!-- Rows will be added here dynamically -->
-            </tbody>
-            <tfoot>
-                <tr>
-                    <td colspan="4"><button style="width: 100%; padding: 10px; font-size: 1em; cursor: pointer;" onclick="addPatch()">Add</button></td>
-                </tr>
-            </tfoot>
-            </table>
-        <hr>
-        <button onclick="generateXML()">Write <code>modding.xml</code> file</button>
-        <p>When the file is generated, this editor will close.</p>
-            </div>
-        </body>
-        <!-- service worker -->
-        <script>
-            if ('serviceWorker' in navigator) {
-                window.addEventListener('load', () => {
-                    navigator.serviceWorker
-                        .register('/worker.js')
-                        .then((registration) => {
-                            console.log('Service Worker registered with scope: ', registration.scope);
-                        })
-                        .catch((error) => {
-                            console.log('Service Worker registration failed: ', error);
-                        });
-                });
-            }
-
-        </script>
-        <script>
-            var cachedpatches = [];
-
-        function addPatch() {
-            var uid = Date.now().toString() + Math.floor(Math.random() * 1000).toString();
-
-            var tbody = document.getElementById('patchBody');
-            var newRow = document.createElement('tr');
-            
-            var td0 = document.createElement('td');
-            var select0 = document.createElement('select');
-            select0.name = 'patchtype';
-            select0.innerHTML = '<option value="xdelta">XDelta (or other supported patching file)</option><option value="override">Copy file to</option>';
-            td0.appendChild(select0);
-
-            var td1 = document.createElement('td');
-            var input1 = document.createElement('input');
-            input1.type = 'text';
-            input1.name = 'patchfrom';
-            input1.placeholder = './path/to/patch.xdelta';
-            td1.appendChild(input1);
-
-            var td2 = document.createElement('td');
-            var input2 = document.createElement('input');
-            input2.type = 'text';
-            input2.name = 'patchto';
-            input2.placeholder = './path/to/dest.win';
-            td2.appendChild(input2);
-
-            var td3 = document.createElement('td');
-            var removeButton = document.createElement('button');
-            removeButton.type = 'button';
-            removeButton.style.width = '100%';
-            removeButton.style.padding = '5px';
-            removeButton.innerText = 'Remove';
-            removeButton.onclick = function() {
-                tbody.removeChild(newRow);
-                cachedpatches = cachedpatches.filter(item => item.uid !== uid);
-            };
-            td3.appendChild(removeButton);
-
-            cachedpatches.push({from: input1, to: input2, uid: uid});
-
-            newRow.appendChild(td0);
-            newRow.appendChild(td1);
-            newRow.appendChild(td2);
-            newRow.appendChild(td3);
-            tbody.appendChild(newRow);
+function validateSubmittedPatches(value, root) {
+    if (!Array.isArray(value) || value.length === 0 || value.length > MAXIMUM_PATCHES) {
+        throw new Error(`Provide between 1 and ${MAXIMUM_PATCHES} patches.`);
+    }
+    return value.map((entry, index) => {
+        const type = String(entry?.type || '').toLowerCase();
+        const patch = String(entry?.patch || '').trim();
+        const to = String(entry?.to || '').trim();
+        if (!PATCH_TYPES.has(type)) throw new Error(`Patch ${index + 1} has an unsupported type.`);
+        if (!isSafeRelativePath(patch) || !isSafeRelativePath(to)) {
+            throw new Error(`Patch ${index + 1} must use safe relative paths.`);
         }
+        const source = resolveProjectPath(root, patch, true);
+        const stat = fs.lstatSync(source);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) {
+            throw new Error(`Patch source "${patch}" must be a regular, non-linked file.`);
+        }
+        return { type, patch, to };
+    });
+}
 
-        function generateXML() {
-            function i(id) {
-                return document.getElementById(id).value;
-            }
+function serializePatches(patches) {
+    return `${patches.map(entry => (
+        `<patch type="${escapeXmlAttribute(entry.type)}" patch="${escapeXmlAttribute(entry.patch)}" to="${escapeXmlAttribute(entry.to)}"/>`
+    )).join('\n')}\n`;
+}
 
-            var str = "";
+function editorHtml(token, nonce) {
+    return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deltamod Community patch editor</title>
+<style>
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #120d12; color: #f7edf4; }
+body { margin: 0; padding: 2rem; }
+main { max-width: 1100px; margin: auto; }
+h1 { margin-bottom: .25rem; }
+p { color: #cbbec8; }
+table { width: 100%; border-collapse: collapse; background: #211721; }
+th, td { padding: .75rem; border-bottom: 1px solid #493246; text-align: left; }
+input, select, button { box-sizing: border-box; min-height: 2.5rem; border: 1px solid #79516f; border-radius: .35rem; }
+input, select { width: 100%; padding: .5rem; background: #120d12; color: inherit; }
+button { padding: .55rem .9rem; background: #ad3c5b; color: white; font-weight: 700; cursor: pointer; }
+.actions { display: flex; gap: .75rem; margin-top: 1rem; }
+.remove { background: #4b2d3a; }
+#status { min-height: 1.5rem; }
+</style>
+</head>
+<body>
+<main>
+<h1>modding.xml editor</h1>
+<p>All paths are validated as project-relative before the file is written.</p>
+<table>
+<thead><tr><th>Type</th><th>Source file</th><th>Game destination</th><th>Action</th></tr></thead>
+<tbody id="patches"></tbody>
+</table>
+<div class="actions">
+<button id="add" type="button">Add patch</button>
+<button id="save" type="button">Validate and save</button>
+</div>
+<p id="status" role="status"></p>
+</main>
+<script nonce="${nonce}">
+const token = ${JSON.stringify(token)};
+const body = document.querySelector('#patches');
+const status = document.querySelector('#status');
+function addPatch() {
+  const row = document.createElement('tr');
+  row.innerHTML = '<td><select data-field="type"><option value="xdelta">XDelta</option><option value="g3mpatch">G3M patch</option><option value="override">Override</option><option value="copy">Copy</option></select></td><td><input data-field="patch" placeholder="./patches/change.xdelta"></td><td><input data-field="to" placeholder="./chapter1_windows/data.win"></td><td><button type="button" class="remove">Remove</button></td>';
+  row.querySelector('.remove').addEventListener('click', () => row.remove());
+  body.append(row);
+}
+document.querySelector('#add').addEventListener('click', addPatch);
+document.querySelector('#save').addEventListener('click', async () => {
+  status.textContent = 'Validating...';
+  const patches = [...body.querySelectorAll('tr')].map(row => ({
+    type: row.querySelector('[data-field="type"]').value,
+    patch: row.querySelector('[data-field="patch"]').value,
+    to: row.querySelector('[data-field="to"]').value
+  }));
+  try {
+    const response = await fetch('/save', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-deltamod-token': token },
+      body: JSON.stringify({ patches })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Save failed.');
+    status.textContent = 'Saved. You may close this tab.';
+  } catch (error) {
+    status.textContent = error.message;
+  }
+});
+addPatch();
+</script>
+</body>
+</html>`;
+}
 
-            var doc = document.implementation.createDocument("", "", null);
+async function readJsonBody(request) {
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of request) {
+        size += chunk.length;
+        if (size > MAXIMUM_BODY_BYTES) throw new Error('Request body is too large.');
+        chunks.push(chunk);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
 
-            cachedpatches.forEach(function (entry) {
-                var fromInput = entry.from;
-                var toInput = entry.to;
-                if (!fromInput || !toInput) return;
+async function run(args = []) {
+    if (args.includes('--help')) {
+        console.log('Usage: deltamod-community xml [project] [--no-open]');
+        return;
+    }
+    const noOpen = args.includes('--no-open');
+    const positionals = args.filter(value => !value.startsWith('--'));
+    const unknown = args.filter(value => value.startsWith('--') && value !== '--no-open');
+    if (unknown.length) throw new Error(`Unknown option ${unknown[0]}.`);
+    if (positionals.length > 1) throw new Error('The xml command accepts at most one project path.');
 
-                var row = fromInput.closest('tr');
-                var typeSelect = row ? row.querySelector('select[name="patchtype"]') : null;
-                var typeVal = typeSelect ? typeSelect.value : 'xdelta';
+    const root = path.resolve(positionals[0] || process.cwd());
+    const token = crypto.randomBytes(32).toString('base64url');
+    const nonce = crypto.randomBytes(18).toString('base64');
+    const html = editorHtml(token, nonce);
 
-                var fromVal = fromInput.value.trim();
-                var toVal = toInput.value.trim();
-                if (!fromVal || !toVal) return;
-
-                var patchEl = doc.createElement('patch');
-                patchEl.setAttribute('type', typeVal);
-                patchEl.setAttribute('patch', fromVal);
-                patchEl.setAttribute('to', toVal);
-                
-                var patchString = new XMLSerializer().serializeToString(patchEl);
-                str += patchString + "\\n";
-            });
-
-            fetch('/load', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Token': '${rand}'
-                },  
-                body: JSON.stringify({ xml: str })
-            }).then(res => res.json()).then(data => {
-                if (data.success) {
-                    window.close();
+    await new Promise((resolve, reject) => {
+        const server = http.createServer(async (request, response) => {
+            response.setHeader('Cache-Control', 'no-store');
+            response.setHeader('X-Content-Type-Options', 'nosniff');
+            try {
+                if (request.method === 'GET' && request.url === '/') {
+                    response.writeHead(200, {
+                        'Content-Type': 'text/html; charset=utf-8',
+                        'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'`
+                    });
+                    response.end(html);
+                    return;
                 }
-            });
-        }
-        </script>
-        <style>
-        .header {
-            margin: 10px;
-            width: calc(50% - 100px);
-            height: fit-content;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-            text-align: center;
-            background-color: rgb(43, 43, 43);
-            position: fixed;
-            top: 10px;
-            left: 10px;
-
-            color: white;
-            animation: fadeIn 0.5s ease-in-out;
-        }
-
-        .header > * {
-            color: white;
-        }
-
-        @keyframes fadeIn {
-            from { transform: translateX(-10px); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-        }
-
-        deltahub-icon {
-            width: 15px;
-            height: 15px;
-            vertical-align: middle;
-            background-image: url('deltahubn.png');
-            background-size: contain;
-            background-repeat: no-repeat;
-            display: inline-block;
-        }
-
-        deltamod-icon {
-            width: 15px;
-            height: 15px;
-            vertical-align: middle;
-            background-image: url('deltamod.png');
-            background-size: contain;
-            background-repeat: no-repeat;
-            display: inline-block;
-        }
-
-        input:not([type="checkbox"]), textarea, select {
-            display: block;
-            margin-top: 5px;
-            margin-bottom: 5px;
-            padding: 8px;
-            width: calc(100% - 20px);
-        }
-        .sidebar, .main {
-            min-height: 300px;
-        }
-        .content {
-            display: flex;
-            justify-content: left;
-            align-items: baseline;
-            padding: 20px;
-            width: 100%;
-            
-            gap: 20px;
-        }
-
-        .main {
-            background-color: #efefef;
-            padding: 20px;
-            margin: 10px;
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            border-radius: 10px;
-            overflow-y: scroll;
-            width: calc(50% - 60px);
-            height: fit-content;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-            animation: fadeIn 0.5s ease-in-out;
-        }
-
-        .sidebar {
-            background-color: #62626237;
-            padding: 10px;
-            border-radius: 5px;
-        }
-
-        .sidebar > button {
-            display: block;
-            width: 100%;
-            font-size: 0.7em;
-            margin-bottom: 5px;
-            cursor: pointer;
-        }
-
-        body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background-color: #f0f0f0;
-            padding: 0;
-            position: absolute;
-            top: 0;
-            height: 100%;
-            overflow-y: scroll;
-            overflow-x: hidden;
-            left: 0;
-            width: 100%;
-        }
-
-        h1,h2,h3,h4,h5,h6 {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            color: #333;
-            margin: 0;
-        }
-        h1 {
-            margin: 0;
-            font-size: 2.5em;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background-color: #ffffff;
-        }
-
-        table th, table td {
-            padding: 10px;
-            text-align: left;
-            border: 1px solid #000000;
-        }
-
-        table th {
-            background-color: #000000;
-            color: #ffffff;
-            font-weight: bold;
-        }
-
-        table tr:nth-child(even) {
-            background-color: #f0f0f0;
-        }
-
-        table tr:hover {
-            background-color: #e0e0e0;
-        }
-        </style>
-        </html>
-        `;
-
-        app.get("/", (req, res) => {
-            res.status(200).type("html").send(html);
-        });
-
-        app.post("/load", express.json(), (req, res) => {
-            if (req.headers['x-token'] !== rand) {
-                res.status(403).json({ success: false, message: 'Forbidden' });
-                return;
+                if (request.method === 'POST' && request.url === '/save') {
+                    if (request.headers['x-deltamod-token'] !== token) {
+                        response.writeHead(403, { 'Content-Type': 'application/json' });
+                        response.end(JSON.stringify({ error: 'Forbidden.' }));
+                        return;
+                    }
+                    const body = await readJsonBody(request);
+                    const patches = validateSubmittedPatches(body.patches, root);
+                    const outputPath = path.join(root, 'modding.xml');
+                    const temporary = `${outputPath}.${process.pid}.tmp`;
+                    await fs.promises.writeFile(temporary, serializePatches(patches), { encoding: 'utf8', flag: 'wx' });
+                    await fs.promises.rename(temporary, outputPath);
+                    response.writeHead(200, { 'Content-Type': 'application/json' });
+                    response.end(JSON.stringify({ success: true }));
+                    log(`Saved ${outputPath}`);
+                    setImmediate(() => server.close(resolve));
+                    return;
+                }
+                response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+                response.end('Not found.');
+            } catch (error) {
+                response.writeHead(400, { 'Content-Type': 'application/json' });
+                response.end(JSON.stringify({ error: error.message }));
             }
-            const xmlContent = req.body.xml;
-
-            const fs = require('fs');
-            const path = require('path');
-            fs.writeFileSync(path.join(process.cwd(), 'modding.xml'), xmlContent, 'utf-8');
-            res.json({ success: true });
-
-            log('xml editor closed');
-            resolve();
         });
-
-        app.listen(PORT, () => {
-            log('opening xml editor in browser...');
-            require('child_process').exec(`start http://localhost:${PORT}`);
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+            const address = server.address();
+            const url = `http://127.0.0.1:${address.port}/`;
+            log(`Patch editor available at ${url}`);
+            if (!noOpen) openExternal(url);
         });
-    });    
+    });
 }
 
 module.exports = run;
+module.exports.serializePatches = serializePatches;
+module.exports.validateSubmittedPatches = validateSubmittedPatches;

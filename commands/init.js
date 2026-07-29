@@ -1,113 +1,116 @@
-const readline = require('readline');
-const interface = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-});
 const fs = require('fs');
 const path = require('path');
-const chalk = require('chalk');
+const readline = require('readline');
+const TOML = require('js-toml');
+const { parseArgs, rejectUnknownOptions } = require('../lib/args');
+const { style } = require('../lib/output');
 
-function style(text, hex) {
-    return chalk.hex(hex)(text);
+function createQuestioner(input = process.stdin, output = process.stdout) {
+    const prompt = readline.createInterface({ input, output });
+
+    async function ask(question, options = {}) {
+        while (true) {
+            const answer = await new Promise(resolve => prompt.question(question, resolve));
+            const trimmed = answer.trim();
+            if (!trimmed && options.allowEmpty) return '';
+            if (!trimmed) {
+                console.log(style('Input cannot be empty.', '#ff7d7d'));
+                continue;
+            }
+            if (options.pattern && !options.pattern.test(trimmed)) {
+                console.log(style('Input does not match the required format.', '#ff7d7d'));
+                continue;
+            }
+            return trimmed;
+        }
+    }
+
+    return { ask, close: () => prompt.close() };
 }
 
-function ask(question, regex = null, allowEmpty = false) {
-    return new Promise(async resolve => {
-        interface.question(question, async (answer) => {
-            if (!answer.trim()) {
-                if (allowEmpty) {
-                    resolve(answer);
-                    return;
-                }
-                console.log(style('Input cannot be empty. Please try again.', '#ff6464'));
-                await new Promise(r => setTimeout(r, 1000));
-                // cancel the current question and ask again
-                readline.moveCursor(process.stdout, 0, -1);
-                readline.clearLine(process.stdout, 0);
-                readline.moveCursor(process.stdout, 0, -1);
-                readline.clearLine(process.stdout, 0);
-
-                return resolve(ask(question, regex));
-            }
-            if (regex && !regex.test(answer)) {
-                console.log(style('Input does not match the required format. Please try again.', '#ff6464'));
-                await new Promise(r => setTimeout(r, 1000));
-                readline.moveCursor(process.stdout, 0, -1);
-                readline.clearLine(process.stdout, 0);
-                readline.moveCursor(process.stdout, 0, -1);
-                readline.clearLine(process.stdout, 0);
-                return resolve(ask(question, regex));
-            }
-            resolve(answer);
-        });
-    });
-}
-
-async function run() {
-    if (fs.existsSync(path.join(process.cwd(), 'meta.json'))) {
-        console.log(style('This directory already is initialized. Remove meta.json to reinitialize.', '#ff6464'));
-        interface.close();
+async function run(args = []) {
+    if (args.includes('--help')) {
+        console.log('Usage: deltamod-community init [project]');
         return;
     }
-    console.log(style('Welcome! We will now init your mod\'s configuration. Please answer the following questions:\n', '#9fc4ff'));
-    
-    const name = (await ask(style('Name: ', '#468dff'), /^[a-zA-Z0-9\s\-_]+$/)).trim();
-    const version = (await ask(style('Version: ', '#468dff'), /^\d+\.\d+\.\d+$/)).trim();
-    const description = (await ask(style('Description: ', '#468dff'))).trim();
+    const parsed = parseArgs(args);
+    rejectUnknownOptions(parsed);
+    if (parsed.positionals.length > 1) throw new Error('The init command accepts at most one project path.');
 
-    const authorsInput = (await ask(style('Authors (comma-separated): ', '#468dff'), true)).trim();
-    let author = authorsInput
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean);
-
-    if (author.length == 0) {
-        author = [process.env.USER || process.env.USERNAME || 'Mod Developer'];
+    const root = path.resolve(parsed.positionals[0] || process.cwd());
+    await fs.promises.mkdir(root, { recursive: true });
+    const outPath = path.join(root, 'meta.toml');
+    if (fs.existsSync(outPath) || fs.existsSync(path.join(root, 'meta.json'))) {
+        throw new Error('This directory already contains a mod manifest.');
     }
 
-    const packageID = (await ask(style('Package ID (e.g. website.mod.author): ', '#468dff'), /^[a-zA-Z0-9]+(\.[a-zA-Z0-9]+){2}$/)).trim();
-    const game = (await ask(style('Game code: ', '#468dff'), /^.+\..+$/)).trim();
-    const url = (await ask(style('URL: ', '#468dff'), /^https?:\/\/.+/, true)).trim();
+    const questioner = createQuestioner();
+    try {
+        console.log(style('Create a Deltamod Community mod manifest.\n', '#a9ddff'));
+        const name = await questioner.ask(style('Name: ', '#6ec8ff'), {
+            pattern: /^[a-zA-Z0-9][a-zA-Z0-9\s_'".()&-]{0,119}$/
+        });
+        const version = await questioner.ask(style('Version: ', '#6ec8ff'), {
+            pattern: /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+        });
+        const description = await questioner.ask(style('Description: ', '#6ec8ff'));
+        const authorsInput = await questioner.ask(style('Authors (comma-separated): ', '#6ec8ff'), {
+            allowEmpty: true
+        });
+        const author = authorsInput
+            .split(',')
+            .map(value => value.trim())
+            .filter(Boolean);
+        if (!author.length) author.push(process.env.USERNAME || process.env.USER || 'Mod Developer');
 
-    const mergeSupportInput = (await ask(style('Merge support? (yes/no): ', '#468dff'), /^(yes|no)$/)).trim().toLowerCase();
-    const mergeSupport = mergeSupportInput == 'yes';
+        const packageID = await questioner.ask(style('Package ID (example.mod.author): ', '#6ec8ff'), {
+            pattern: /^[a-z0-9][a-z0-9_-]{0,62}(?:\.[a-z0-9][a-z0-9_-]{0,62}){2}$/i
+        });
+        const game = await questioner.ask(style('Game code: ', '#6ec8ff'), {
+            pattern: /^[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+$/i
+        });
+        const url = await questioner.ask(style('Project URL (optional): ', '#6ec8ff'), {
+            allowEmpty: true,
+            pattern: /^https:\/\/\S+$/
+        });
+        const mergeSupportAnswer = await questioner.ask(style('Merge support? (yes/no): ', '#6ec8ff'), {
+            pattern: /^(yes|no)$/i
+        });
+        const tagsInput = await questioner.ask(style('Tags (comma-separated, optional): ', '#6ec8ff'), {
+            allowEmpty: true
+        });
 
-    const tagsInput = (await ask(style('Tags (comma-separated): ', '#468dff'), /^[a-zA-Z0-9\s\-_]+$/, true)).trim();
-    const tags = tagsInput
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean);
+        const metadata = {
+            name,
+            version,
+            description,
+            author,
+            packageID,
+            game,
+            mergeSupport: mergeSupportAnswer.toLowerCase() === 'yes',
+            tags: tagsInput.split(',').map(value => value.trim()).filter(Boolean)
+        };
+        if (url) metadata.url = url;
 
-    const deltaruneTargetVersion = (
-        packageID.startsWith('toby.deltarune') ? 
-        (await ask(style('Deltarune target version: ', '#468dff'), /^\d+\.\d+\.\d+$/)).trim() : ""
-    );
-
-    const data = {
-        metadata: {
-            name: name || 'example',
-            version: version || '1.0.0',
-            description: description || 'Lorem ipsum',
-            author: author.length ? author : ['Mod Developer 1', 'Mod Developer 2'],
-            packageID: packageID || 'website.mod.author',
-            game: game || 'toby.deltarune',
-            url: url || 'https://example.com',
-            mergeSupport,
-            tags: tags.length ? tags : ['other', 'customization']
-        },
-        deltaruneTargetVersion: deltaruneTargetVersion || '',
-        exporter: {
-            tool: 'deltamodCLI'
+        const data = {
+            metadata,
+            exporter: {
+                tool: 'deltamod-community-cli'
+            }
+        };
+        if (game === 'toby.deltarune') {
+            data.deltaruneTargetVersion = await questioner.ask(style('Deltarune target version: ', '#6ec8ff'), {
+                pattern: /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+            });
         }
-    };
 
-    const outPath = path.join(process.cwd(), 'meta.json');
-    fs.writeFileSync(outPath, JSON.stringify(data, null, 4), 'utf8');
-
-    console.log(style(`\n\nWrote meta.json to ${outPath}\n`, '#84ff9f') + JSON.stringify(data, null, 4));
-    interface.close();
-
-    return;
+        await fs.promises.writeFile(outPath, `${TOML.dump(data)}\n`, { encoding: 'utf8', flag: 'wx' });
+        console.log(style(`Created ${outPath}`, '#8ce9ac'));
+        return data;
+    } finally {
+        questioner.close();
+    }
 }
 
 module.exports = run;
+module.exports.createQuestioner = createQuestioner;

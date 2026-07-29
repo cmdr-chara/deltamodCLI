@@ -1,10 +1,9 @@
 {
   "main": "./dist/bundle.js",
-  "mainFormat": "commonjs",
-  "output": "./deltamod.exe",
+  "output": "./dist/sea-prep.blob",
   "disableExperimentalSEAWarning": true,
   "useSnapshot": false,
   "useCodeCache": true,
-  "execArgv": ["--no-warnings", "--max-old-space-size=4096"],
+  "execArgv": ["--no-warnings", "--max-old-space-size=512"],
   "execArgvExtension": "env"
 }

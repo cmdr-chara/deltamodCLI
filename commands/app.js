@@ -1,21 +1,19 @@
-function run(detached = false) {
-    const { log } = require('../index.js');
-    const { spawn } = require('child_process');
+const { parseArgs, rejectUnknownOptions } = require('../lib/args');
+const { buildAppUrl, openExternal, resolveTarget } = require('../lib/launcher');
+const { log } = require('../lib/output');
 
-    if (process.argv[4] == '--debug' && !detached) {
-        require('child_process').execSync('start deltamod:');
+async function run(args = []) {
+    if (args.includes('--help')) {
+        console.log('Usage: deltamod-community app [--target community|official] [--dry-run]');
+        return;
     }
-    else {
-        const child = spawn('cmd.exe', ['/c', 'start', '""', 'deltamod:'], {
-            detached: true,
-            stdio: 'ignore'
-        });
-        child.unref();
-    }
+    const parsed = parseArgs(args, ['target']);
+    rejectUnknownOptions(parsed, ['dry-run'], ['target']);
+    if (parsed.positionals.length) throw new Error('The app command does not accept a path.');
 
-    log('Deltamod main app launched');
-
-    return;
+    const target = resolveTarget(parsed.values.target);
+    openExternal(buildAppUrl(target.key), { dryRun: parsed.flags.has('dry-run') });
+    log(`${target.label} launch requested.`);
 }
 
 module.exports = run;
