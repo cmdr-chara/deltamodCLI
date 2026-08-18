@@ -4,8 +4,10 @@ Project tooling for creating, validating, packaging, and importing mods into
 [Deltamod Community](https://github.com/cmdr-chara/deltamod).
 
 This fork does not write directly to either Deltamod profile. `import` creates a
-validated archive and asks Deltamod Community to confirm and complete the
-transaction through its own staged importer.
+validated archive and opens that `.modarchive` through the operating system.
+Current Deltamod Community packages register the file association, validate the
+handoff path again, ask the user to confirm, and then complete the transaction
+through the existing staged importer.
 
 ## Commands
 
@@ -19,9 +21,12 @@ deltamod-community app [--target community|official]
 deltamod-community xml [project]
 ```
 
-The Community target is the default. Official Deltamod does not expose a safe
-local-import protocol, so `--target official` only creates the package, opens
-the application, and leaves the final manual import to the user.
+The Community target is the default. `app` uses a short-lived, content-checked
+`.deltamod-open` marker in the CLI temporary directory so the same native file
+association can launch Deltamod Community without shell interpolation or an
+unsupported custom URL. Official Deltamod does not expose the Community file
+handoff, so `--target official` creates the package, opens the application, and
+leaves the final manual import to the user.
 
 ## Package safety
 
@@ -31,7 +36,8 @@ expanded size, and linked filesystem entries. Git metadata and previous
 `.deltamod-build` output are excluded.
 
 The resulting `.modarchive` is still treated as untrusted by Deltamod Community,
-which validates and extracts it in staging before committing it.
+which checks that the handoff is a regular absolute archive, asks for native
+confirmation, and validates/extracts it in staging before committing it.
 
 ## Development
 

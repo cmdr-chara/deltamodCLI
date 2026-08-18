@@ -16,13 +16,12 @@ test('creates a ZIP-compatible modarchive atomically', async t => {
     assert.equal(fs.readdirSync(path.dirname(result.destination)).some(name => name.endsWith('.tmp')), false);
 });
 
-test('Community import creates a temporary package and an encoded request', async t => {
+test('Community import creates a temporary package and native handoff path', async t => {
     const root = createProject();
     t.after(() => removeProject(root));
     const result = await importCommand([root, '--dry-run']);
     t.after(() => fs.rmSync(result.destination, { force: true }));
-    const url = new URL(result.importUrl);
-    assert.equal(url.hostname, 'import');
-    assert.equal(path.resolve(url.searchParams.get('path')), result.destination);
+    assert.equal(result.handoffPath, result.destination);
+    assert.equal(path.extname(result.handoffPath), '.modarchive');
     assert.equal(fs.existsSync(result.destination), true);
 });
