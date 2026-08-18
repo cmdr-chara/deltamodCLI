@@ -30,7 +30,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Refuse stale CI results
+      - name: Refuse stale or generated CI results
         id: candidate
         env:
           VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -44,6 +44,14 @@ jobs:
             echo "A newer main commit exists; its CI run will own the next release."
             exit 0
           fi
+          subject="$(git show -s --format=%s "$VALIDATED_SHA")"
+          case "$subject" in
+            "chore(release):"*)
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              echo "Generated release commit; refusing recursive prerelease."
+              exit 0
+              ;;
+          esac
           echo "release=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v6
@@ -112,8 +120,10 @@ jobs:
         include:
           - os: windows-latest
             artifact: cli-windows-x64
+            file: deltamod-community-cli-windows-x64.exe
           - os: ubuntu-latest
             artifact: cli-linux-x64
+            file: deltamod-community-cli-linux-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -142,9 +152,7 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           if-no-files-found: error
-          path: |
-            deltamod-community-cli-windows-x64.exe
-            deltamod-community-cli-linux-x64
+          path: ${{ matrix.file }}
 
   publish:
     needs: [prepare, package]
