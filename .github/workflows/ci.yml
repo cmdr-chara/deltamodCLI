@@ -39,7 +39,7 @@ jobs:
         if: runner.os == 'Linux'
         run: ./deltamod-community-cli --help
 
-  prepare-release:
+  prepare_release:
     needs: test-and-package
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -142,9 +142,9 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
 
-  package-release:
-    needs: prepare-release
-    if: needs.prepare-release.outputs.release_sha != ''
+  package_release:
+    needs: prepare_release
+    if: needs.prepare_release.outputs.release_sha != ''
     strategy:
       fail-fast: false
       matrix:
@@ -159,7 +159,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.prepare-release.outputs.release_sha }}
+          ref: ${{ needs.prepare_release.outputs.release_sha }}
 
       - uses: actions/setup-node@v6
         with:
@@ -187,16 +187,16 @@ jobs:
           if-no-files-found: error
           path: ${{ matrix.file }}
 
-  publish-release:
-    needs: [prepare-release, package-release]
-    if: needs.prepare-release.outputs.release_sha != ''
+  publish_release:
+    needs: [prepare_release, package_release]
+    if: needs.prepare_release.outputs.release_sha != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.prepare-release.outputs.release_sha }}
+          ref: ${{ needs.prepare_release.outputs.release_sha }}
           fetch-depth: 0
 
       - uses: actions/download-artifact@v4
@@ -210,8 +210,8 @@ jobs:
 
       - name: Tag exact release commit
         env:
-          TAG: ${{ needs.prepare-release.outputs.tag }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
+          TAG: ${{ needs.prepare_release.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare_release.outputs.release_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -226,9 +226,9 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare-release.outputs.tag }}
-          VERSION: ${{ needs.prepare-release.outputs.version }}
-          PRERELEASE: ${{ needs.prepare-release.outputs.prerelease }}
+          TAG: ${{ needs.prepare_release.outputs.tag }}
+          VERSION: ${{ needs.prepare_release.outputs.version }}
+          PRERELEASE: ${{ needs.prepare_release.outputs.prerelease }}
         shell: bash
         run: |
           args=(release create "$TAG" release-artifacts/* --verify-tag --generate-notes --title "Deltamod Community CLI $VERSION")
