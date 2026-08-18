@@ -1,2 +1,2 @@
 run_sha=037aea604caa3d80fde6f31da17c78970b581811
-stage=running
+stage=failed:npm-audit:exit-1
