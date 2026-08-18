@@ -38,3 +38,201 @@ jobs:
       - name: Smoke-test Linux executable
         if: runner.os == 'Linux'
         run: ./deltamod-community-cli --help
+
+  prepare-release:
+    needs: test-and-package
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - name: Check out validated main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.20.0
+          cache: npm
+
+      - name: Refuse stale candidates
+        id: candidate
+        env:
+          VALIDATED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags --force
+          current="$(git rev-parse origin/main)"
+          if [ "$current" != "$VALIDATED_SHA" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "A newer main commit exists; its CI run owns the next release."
+            exit 0
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve release version
+        if: steps.candidate.outputs.release == 'true'
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const { execFileSync } = require('node:child_process');
+          const current = require('./package.json').version;
+          const currentTag = `v${current}`;
+          const tagExists = (() => {
+            try {
+              execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/tags/${currentTag}`]);
+              return true;
+            } catch {
+              return false;
+            }
+          })();
+
+          let version = current;
+          if (tagExists) {
+            let match = /^(\d+)\.(\d+)\.(\d+)-beta\.(\d+)$/.exec(current);
+            if (match) {
+              version = `${match[1]}.${match[2]}.${match[3]}-beta.${Number(match[4]) + 1}`;
+            } else {
+              match = /^(\d+)\.(\d+)\.(\d+)$/.exec(current);
+              if (!match) throw new Error(`Unsupported automatic-release version: ${current}`);
+              version = `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+            }
+          }
+          console.log(`version=${version}`);
+          console.log(`tag=v${version}`);
+          console.log(`prerelease=${version.includes('-') ? 'true' : 'false'}`);
+          NODE
+
+      - name: Synchronize package metadata
+        if: steps.candidate.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Commit exact release candidate
+        if: steps.candidate.outputs.release == 'true'
+        id: release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): ${TAG} [skip ci]"
+            git push origin HEAD:main
+          fi
+          release_sha="$(git rev-parse HEAD)"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+  package-release:
+    needs: prepare-release
+    if: needs.prepare-release.outputs.release_sha != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: cli-windows-x64
+            file: deltamod-community-cli-windows-x64.exe
+          - os: ubuntu-latest
+            artifact: cli-linux-x64
+            file: deltamod-community-cli-linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.20.0
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run build
+
+      - name: Name Windows release binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Move-Item -LiteralPath '.\deltamod-community-cli.exe' -Destination '.\deltamod-community-cli-windows-x64.exe'
+
+      - name: Name Linux release binary
+        if: runner.os == 'Linux'
+        run: mv ./deltamod-community-cli ./deltamod-community-cli-linux-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: ${{ matrix.file }}
+
+  publish-release:
+    needs: [prepare-release, package-release]
+    if: needs.prepare-release.outputs.release_sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: release-artifacts
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Tag exact release commit
+        env:
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin --tags --force
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Refusing to move existing tag $TAG" >&2
+            exit 1
+          fi
+          git tag "$TAG" "$RELEASE_SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          PRERELEASE: ${{ needs.prepare-release.outputs.prerelease }}
+        shell: bash
+        run: |
+          args=(release create "$TAG" release-artifacts/* --verify-tag --generate-notes --title "Deltamod Community CLI $VERSION")
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"
