@@ -26,5 +26,8 @@
   "devDependencies": {
     "esbuild": "^0.28.1",
     "postject": "^1.0.0-alpha.6"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.9"
   }
 }
